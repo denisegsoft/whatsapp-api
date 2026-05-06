@@ -5,12 +5,13 @@ const {
     fetchLatestBaileysVersion,
 } = require('@whiskeysockets/baileys')
 const { Boom } = require('@hapi/boom')
-const qrcode = require('qrcode-terminal')
+const QRCode = require('qrcode')
 const pino = require('pino')
 const { sendWebhookToLaravel } = require('./webhook')
 
 let sock = null
 let isConnected = false
+let currentQR = null
 
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info')
@@ -26,12 +27,12 @@ async function connectToWhatsApp() {
 
     sock.ev.on('creds.update', saveCreds)
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
 
         if (qr) {
-            console.log('\n Escaneá este QR con WhatsApp (Dispositivos vinculados → Vincular dispositivo):\n')
-            qrcode.generate(qr, { small: true })
+            currentQR = await QRCode.toDataURL(qr)
+            console.log('QR generado — abrí /ui para escanearlo')
         }
 
         if (connection === 'close') {
@@ -43,12 +44,13 @@ async function connectToWhatsApp() {
                 console.log('Conexión cerrada, reconectando...')
                 setTimeout(connectToWhatsApp, 3000)
             } else {
-                console.log('Sesión cerrada. Eliminá la carpeta auth_info/ y reiniciá el servidor.')
+                console.log('Sesión cerrada. Eliminá auth_info/ y reiniciá el servidor.')
             }
         }
 
         if (connection === 'open') {
             isConnected = true
+            currentQR = null
             console.log('Conectado a WhatsApp')
         }
     })
@@ -62,7 +64,6 @@ async function connectToWhatsApp() {
 
             const remoteJid = msg.key.remoteJid
 
-            // Ignorar grupos
             if (remoteJid.endsWith('@g.us')) continue
 
             const from = remoteJid.replace('@s.whatsapp.net', '')
@@ -71,7 +72,6 @@ async function connectToWhatsApp() {
                 msg.message?.extendedTextMessage?.text ||
                 null
 
-            // Por ahora solo manejamos mensajes de texto
             if (!text) continue
 
             console.log(`Mensaje de ${from}: ${text}`)
@@ -91,7 +91,6 @@ async function sendMessage(to, message) {
         throw new Error('WhatsApp no está conectado')
     }
 
-    // Normalizar número: sacar +, espacios, guiones
     const number = to.replace(/[^0-9]/g, '')
     const jid = `${number}@s.whatsapp.net`
 
@@ -102,4 +101,8 @@ function getStatus() {
     return { connected: isConnected }
 }
 
-module.exports = { connectToWhatsApp, sendMessage, getStatus }
+function getCurrentQR() {
+    return currentQR
+}
+
+module.exports = { connectToWhatsApp, sendMessage, getStatus, getCurrentQR }
