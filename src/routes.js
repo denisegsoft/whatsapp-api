@@ -1,5 +1,6 @@
 const express = require('express')
 const { sendMessage, getStatus, getCurrentQR } = require('./whatsapp')
+const { addListener, removeListener, getMessages } = require('./messageStore')
 
 const router = express.Router()
 
@@ -11,8 +12,8 @@ function authMiddleware(req, res, next) {
     next()
 }
 
-function uiAuthMiddleware(req, res, next) {
-    const key = req.query.key
+function uiAuth(req, res, next) {
+    const key = req.query.key || req.headers['x-api-key']
     if (!key || key !== process.env.API_KEY) {
         return res.status(401).send('<h2>No autorizado</h2>')
     }
@@ -24,15 +25,31 @@ router.get('/status', (req, res) => {
     res.json({ service: 'whatsapp-node', ...getStatus() })
 })
 
-// GET /qr — devuelve el QR actual como base64 o null si ya está conectado
-router.get('/qr', uiAuthMiddleware, (req, res) => {
-    const qr = getCurrentQR()
-    const { connected } = getStatus()
-    res.json({ connected, qr: qr || null })
+// GET /qr
+router.get('/qr', uiAuth, (req, res) => {
+    res.json({ connected: getStatus().connected, qr: getCurrentQR() || null })
 })
 
-// GET /ui — interfaz web para escanear el QR
-router.get('/ui', uiAuthMiddleware, (req, res) => {
+// GET /events — SSE stream de mensajes entrantes
+router.get('/events', uiAuth, (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders()
+
+    const send = (msg) => res.write(`data: ${JSON.stringify(msg)}\n\n`)
+
+    addListener(send)
+    req.on('close', () => removeListener(send))
+})
+
+// GET /messages — historial reciente
+router.get('/messages', uiAuth, (req, res) => {
+    res.json(getMessages())
+})
+
+// GET /ui — interfaz completa
+router.get('/ui', uiAuth, (req, res) => {
     const key = req.query.key
     res.send(`<!DOCTYPE html>
 <html lang="es">
@@ -42,99 +59,227 @@ router.get('/ui', uiAuthMiddleware, (req, res) => {
     <title>WhatsApp — ReservaTuEspacio</title>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #f0f2f5;
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; }
+
+        .topbar {
+            background: #075e54;
+            color: white;
+            padding: 14px 24px;
             display: flex;
             align-items: center;
-            justify-content: center;
-            min-height: 100vh;
+            gap: 12px;
         }
-        .card {
+        .topbar h1 { font-size: 18px; font-weight: 600; }
+        .topbar .sub { font-size: 13px; opacity: .7; margin-left: auto; }
+        .badge {
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        .badge.on { background: #25d366; color: white; }
+        .badge.off { background: #e74c3c; color: white; }
+        .badge.wait { background: #f39c12; color: white; }
+
+        .layout { display: flex; height: calc(100vh - 50px); }
+
+        /* Panel QR */
+        .qr-panel {
+            width: 260px;
             background: white;
-            border-radius: 16px;
-            padding: 40px;
-            text-align: center;
-            box-shadow: 0 4px 24px rgba(0,0,0,0.08);
-            max-width: 400px;
-            width: 100%;
+            border-right: 1px solid #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 24px 16px;
+            gap: 16px;
         }
-        .logo { font-size: 32px; margin-bottom: 8px; }
-        h1 { font-size: 20px; color: #111; margin-bottom: 4px; }
-        .subtitle { color: #888; font-size: 14px; margin-bottom: 32px; }
-        #qr-container img { width: 240px; height: 240px; border-radius: 8px; }
-        #qr-container .placeholder {
-            width: 240px;
-            height: 240px;
+        .qr-panel h2 { font-size: 14px; color: #555; }
+        .qr-panel img { width: 200px; height: 200px; border-radius: 8px; }
+        .qr-placeholder {
+            width: 200px; height: 200px;
             background: #f0f2f5;
             border-radius: 8px;
+            display: flex; align-items: center; justify-content: center;
+            color: #aaa; font-size: 13px; text-align: center; padding: 16px;
+        }
+
+        /* Panel mensajes */
+        .messages-panel { flex: 1; display: flex; flex-direction: column; }
+        .messages-header {
+            padding: 14px 20px;
+            background: white;
+            border-bottom: 1px solid #e0e0e0;
+            font-size: 14px;
+            color: #555;
             display: flex;
+            justify-content: space-between;
             align-items: center;
-            justify-content: center;
-            margin: 0 auto;
+        }
+        .messages-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .msg-card {
+            background: white;
+            border-radius: 12px;
+            padding: 14px 16px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+            max-width: 680px;
+        }
+        .msg-card .meta {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 6px;
+        }
+        .msg-card .from {
+            font-size: 13px;
+            font-weight: 600;
+            color: #075e54;
+        }
+        .msg-card .time {
+            font-size: 11px;
             color: #aaa;
-            font-size: 14px;
         }
-        .status {
-            margin-top: 24px;
-            padding: 10px 20px;
-            border-radius: 20px;
-            font-size: 14px;
-            font-weight: 500;
-            display: inline-block;
+        .msg-card .text {
+            font-size: 15px;
+            color: #111;
+            margin-bottom: 10px;
         }
-        .status.connected { background: #dcfce7; color: #16a34a; }
-        .status.waiting { background: #fef9c3; color: #ca8a04; }
-        .status.disconnected { background: #fee2e2; color: #dc2626; }
-        .hint { margin-top: 16px; font-size: 13px; color: #999; }
+        .msg-card .laravel-response {
+            background: #f0f2f5;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 12px;
+            color: #555;
+        }
+        .msg-card .laravel-response .label {
+            font-size: 11px;
+            font-weight: 600;
+            color: #888;
+            margin-bottom: 4px;
+        }
+        .msg-card .laravel-response pre {
+            white-space: pre-wrap;
+            word-break: break-word;
+            font-family: monospace;
+        }
+        .msg-card .error { color: #e74c3c; }
+        .empty { text-align: center; color: #aaa; margin-top: 60px; font-size: 14px; }
+        .new-msg { animation: slideIn .3s ease; }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(-8px); }
+            to   { opacity: 1; transform: translateY(0); }
+        }
     </style>
 </head>
 <body>
-<div class="card">
-    <div class="logo">📱</div>
-    <h1>WhatsApp Web</h1>
-    <p class="subtitle">ReservaTuEspacio</p>
 
-    <div id="qr-container">
-        <div class="placeholder">Cargando...</div>
+<div class="topbar">
+    <span>📱</span>
+    <h1>WhatsApp — ReservaTuEspacio</h1>
+    <span id="status-badge" class="badge wait">Cargando...</span>
+    <span class="sub" id="msg-count">0 mensajes</span>
+</div>
+
+<div class="layout">
+    <div class="qr-panel">
+        <h2>Estado de conexión</h2>
+        <div id="qr-container"><div class="qr-placeholder">Cargando...</div></div>
+        <p id="qr-hint" style="font-size:12px;color:#999;text-align:center;"></p>
     </div>
 
-    <div id="status-badge" class="status waiting">Esperando QR...</div>
-    <p id="hint" class="hint">Abrí WhatsApp → Dispositivos vinculados → Vincular dispositivo</p>
+    <div class="messages-panel">
+        <div class="messages-header">
+            <span>Mensajes recibidos</span>
+            <span style="font-size:12px;color:#aaa;">Se actualiza en tiempo real</span>
+        </div>
+        <div class="messages-list" id="messages-list">
+            <p class="empty">No hay mensajes aún</p>
+        </div>
+    </div>
 </div>
 
 <script>
-    const KEY = '${key}'
+const KEY = '${key}'
 
-    async function poll() {
-        try {
-            const res = await fetch('/qr?key=' + KEY)
-            const data = await res.json()
-            const container = document.getElementById('qr-container')
-            const badge = document.getElementById('status-badge')
-            const hint = document.getElementById('hint')
+function renderMsg(msg, prepend = false) {
+    const list = document.getElementById('messages-list')
+    const empty = list.querySelector('.empty')
+    if (empty) empty.remove()
 
-            if (data.connected) {
-                container.innerHTML = '<div class="placeholder">✓ Conectado</div>'
-                badge.className = 'status connected'
-                badge.textContent = 'Conectado'
-                hint.textContent = 'El servidor está recibiendo mensajes.'
-            } else if (data.qr) {
-                container.innerHTML = '<img src="' + data.qr + '" alt="QR Code">'
-                badge.className = 'status waiting'
-                badge.textContent = 'Esperando escaneo...'
-                hint.textContent = 'Abrí WhatsApp → Dispositivos vinculados → Vincular dispositivo'
-            } else {
-                badge.className = 'status disconnected'
-                badge.textContent = 'Iniciando...'
-            }
-        } catch (e) {
-            console.error(e)
+    const hasError = msg.laravelResponse && msg.laravelResponse.error
+    const responseHtml = msg.laravelResponse
+        ? \`<div class="laravel-response">
+            <div class="label">Respuesta Laravel</div>
+            <pre class="\${hasError ? 'error' : ''}">\${JSON.stringify(msg.laravelResponse, null, 2)}</pre>
+           </div>\`
+        : ''
+
+    const card = document.createElement('div')
+    card.className = 'msg-card' + (prepend ? ' new-msg' : '')
+    card.innerHTML = \`
+        <div class="meta">
+            <span class="from">+\${msg.from}</span>
+            <span class="time">\${msg.datetime}</span>
+        </div>
+        <div class="text">\${msg.message}</div>
+        \${responseHtml}
+    \`
+
+    if (prepend) list.prepend(card)
+    else list.appendChild(card)
+}
+
+// Cargar historial
+async function loadHistory() {
+    const res = await fetch('/messages?key=' + KEY)
+    const msgs = await res.json()
+    const count = msgs.length
+    document.getElementById('msg-count').textContent = count + ' mensaje' + (count !== 1 ? 's' : '')
+    if (count > 0) msgs.forEach(m => renderMsg(m))
+}
+
+// Polling QR/status
+async function pollStatus() {
+    try {
+        const res = await fetch('/qr?key=' + KEY)
+        const data = await res.json()
+        const badge = document.getElementById('status-badge')
+        const container = document.getElementById('qr-container')
+        const hint = document.getElementById('qr-hint')
+
+        if (data.connected) {
+            badge.className = 'badge on'; badge.textContent = 'Conectado'
+            container.innerHTML = '<div class="qr-placeholder">✓ Conectado</div>'
+            hint.textContent = 'Recibiendo mensajes'
+        } else if (data.qr) {
+            badge.className = 'badge wait'; badge.textContent = 'Esperando QR'
+            container.innerHTML = '<img src="' + data.qr + '" alt="QR">'
+            hint.textContent = 'WhatsApp → Dispositivos vinculados → Vincular dispositivo'
+        } else {
+            badge.className = 'badge off'; badge.textContent = 'Desconectado'
+            hint.textContent = 'Iniciando...'
         }
-    }
+    } catch(e) {}
+}
 
-    poll()
-    setInterval(poll, 3000)
+// SSE mensajes en tiempo real
+const evtSource = new EventSource('/events?key=' + KEY)
+evtSource.onmessage = (e) => {
+    const msg = JSON.parse(e.data)
+    renderMsg(msg, true)
+    const count = document.querySelectorAll('.msg-card').length
+    document.getElementById('msg-count').textContent = count + ' mensaje' + (count !== 1 ? 's' : '')
+}
+
+loadHistory()
+pollStatus()
+setInterval(pollStatus, 4000)
 </script>
 </body>
 </html>`)
@@ -143,16 +288,11 @@ router.get('/ui', uiAuthMiddleware, (req, res) => {
 // POST /send
 router.post('/send', authMiddleware, async (req, res) => {
     const { to, message } = req.body
-
-    if (!to || !message) {
-        return res.status(400).json({ error: 'Parámetros requeridos: to, message' })
-    }
-
+    if (!to || !message) return res.status(400).json({ error: 'Parámetros requeridos: to, message' })
     try {
         await sendMessage(to, message)
         res.json({ success: true, to, message })
     } catch (err) {
-        console.error('Error al enviar mensaje:', err.message)
         res.status(500).json({ error: err.message })
     }
 })
@@ -160,13 +300,8 @@ router.post('/send', authMiddleware, async (req, res) => {
 // POST /send-bulk
 router.post('/send-bulk', authMiddleware, async (req, res) => {
     const { numbers, message } = req.body
-
-    if (!Array.isArray(numbers) || !message) {
-        return res.status(400).json({ error: 'Parámetros requeridos: numbers (array), message' })
-    }
-
+    if (!Array.isArray(numbers) || !message) return res.status(400).json({ error: 'Parámetros requeridos: numbers (array), message' })
     const results = []
-
     for (const number of numbers) {
         try {
             await sendMessage(number, message)
@@ -176,7 +311,6 @@ router.post('/send-bulk', authMiddleware, async (req, res) => {
             results.push({ number, success: false, error: err.message })
         }
     }
-
     res.json({ results })
 })
 
