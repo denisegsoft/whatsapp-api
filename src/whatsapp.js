@@ -3,6 +3,7 @@ const {
     DisconnectReason,
     useMultiFileAuthState,
     fetchLatestBaileysVersion,
+    makeInMemoryStore,
 } = require('@whiskeysockets/baileys')
 const { Boom } = require('@hapi/boom')
 const QRCode = require('qrcode')
@@ -13,6 +14,31 @@ let sock = null
 let isConnected = false
 let currentQR = null
 
+const logger = pino({ level: 'silent' })
+const store = makeInMemoryStore({ logger })
+
+// Resuelve el número de teléfono real desde un JID (incluye @lid)
+async function resolvePhoneNumber(jid) {
+    // JID normal: 5491112345678@s.whatsapp.net
+    if (jid.endsWith('@s.whatsapp.net')) {
+        return jid.replace('@s.whatsapp.net', '')
+    }
+
+    // JID tipo @lid: número interno de WhatsApp, buscar en store
+    if (jid.endsWith('@lid')) {
+        const contacts = store.contacts
+        for (const [contactJid, contact] of Object.entries(contacts)) {
+            if (contact.lid === jid || contactJid === jid) {
+                return contactJid.replace('@s.whatsapp.net', '')
+            }
+        }
+        // Si no está en el store, devolver el lid limpio como fallback
+        return jid.replace('@lid', '')
+    }
+
+    return jid.split('@')[0]
+}
+
 async function connectToWhatsApp() {
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info')
     const { version } = await fetchLatestBaileysVersion()
@@ -20,10 +46,12 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         version,
         auth: state,
-        logger: pino({ level: 'silent' }),
+        logger,
         printQRInTerminal: false,
         browser: ['ReservaTuEspacio', 'Chrome', '1.0.0'],
     })
+
+    store.bind(sock.ev)
 
     sock.ev.on('creds.update', saveCreds)
 
@@ -63,10 +91,11 @@ async function connectToWhatsApp() {
             if (!msg.message) continue
 
             const remoteJid = msg.key.remoteJid
-
             if (remoteJid.endsWith('@g.us')) continue
 
-            const from = remoteJid.replace('@s.whatsapp.net', '')
+            const from = await resolvePhoneNumber(remoteJid)
+            const pushName = msg.pushName || null
+
             const text =
                 msg.message?.conversation ||
                 msg.message?.extendedTextMessage?.text ||
@@ -74,10 +103,11 @@ async function connectToWhatsApp() {
 
             if (!text) continue
 
-            console.log(`Mensaje de ${from}: ${text}`)
+            console.log(`Mensaje de ${pushName || from} (${from}): ${text}`)
 
             await sendWebhookToLaravel({
                 from,
+                pushName,
                 message: text,
                 messageId: msg.key.id,
                 timestamp: msg.messageTimestamp,

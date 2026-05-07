@@ -224,7 +224,7 @@ function renderMsg(msg, prepend = false) {
     card.className = 'msg-card' + (prepend ? ' new-msg' : '')
     card.innerHTML = \`
         <div class="meta">
-            <span class="from">+\${msg.from}</span>
+            <span class="from">\${msg.pushName ? msg.pushName + ' · ' : ''}+\${msg.from}</span>
             <span class="time">\${msg.datetime}</span>
         </div>
         <div class="text">\${msg.message}</div>
