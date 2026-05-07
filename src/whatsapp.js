@@ -3,7 +3,6 @@ const {
     DisconnectReason,
     useMultiFileAuthState,
     fetchLatestBaileysVersion,
-    makeInMemoryStore,
 } = require('@whiskeysockets/baileys')
 const { Boom } = require('@hapi/boom')
 const QRCode = require('qrcode')
@@ -14,28 +13,17 @@ let sock = null
 let isConnected = false
 let currentQR = null
 
-const logger = pino({ level: 'silent' })
-const store = makeInMemoryStore({ logger })
+// Mapa lid -> número real, se va completando con cada mensaje
+const lidToNumber = {}
 
-// Resuelve el número de teléfono real desde un JID (incluye @lid)
-async function resolvePhoneNumber(jid) {
-    // JID normal: 5491112345678@s.whatsapp.net
+function resolveNumber(jid) {
     if (jid.endsWith('@s.whatsapp.net')) {
         return jid.replace('@s.whatsapp.net', '')
     }
-
-    // JID tipo @lid: número interno de WhatsApp, buscar en store
     if (jid.endsWith('@lid')) {
-        const contacts = store.contacts
-        for (const [contactJid, contact] of Object.entries(contacts)) {
-            if (contact.lid === jid || contactJid === jid) {
-                return contactJid.replace('@s.whatsapp.net', '')
-            }
-        }
-        // Si no está en el store, devolver el lid limpio como fallback
-        return jid.replace('@lid', '')
+        const lid = jid.replace('@lid', '')
+        return lidToNumber[lid] || lid
     }
-
     return jid.split('@')[0]
 }
 
@@ -46,14 +34,23 @@ async function connectToWhatsApp() {
     sock = makeWASocket({
         version,
         auth: state,
-        logger,
+        logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         browser: ['ReservaTuEspacio', 'Chrome', '1.0.0'],
     })
 
-    store.bind(sock.ev)
-
     sock.ev.on('creds.update', saveCreds)
+
+    // Cuando se sincronizan contactos, guardamos el mapeo lid -> número
+    sock.ev.on('contacts.update', (contacts) => {
+        for (const contact of contacts) {
+            if (contact.id?.endsWith('@s.whatsapp.net') && contact.lid) {
+                const lid = contact.lid.replace('@lid', '')
+                const number = contact.id.replace('@s.whatsapp.net', '')
+                lidToNumber[lid] = number
+            }
+        }
+    })
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
@@ -93,7 +90,7 @@ async function connectToWhatsApp() {
             const remoteJid = msg.key.remoteJid
             if (remoteJid.endsWith('@g.us')) continue
 
-            const from = await resolvePhoneNumber(remoteJid)
+            const from = resolveNumber(remoteJid)
             const pushName = msg.pushName || null
 
             const text =
