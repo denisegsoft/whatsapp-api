@@ -41,8 +41,7 @@ async function connectToWhatsApp() {
 
     sock.ev.on('creds.update', saveCreds)
 
-    // Cuando se sincronizan contactos, guardamos el mapeo lid -> número
-    sock.ev.on('contacts.update', (contacts) => {
+    const mapContacts = (contacts) => {
         for (const contact of contacts) {
             if (contact.id?.endsWith('@s.whatsapp.net') && contact.lid) {
                 const lid = contact.lid.replace('@lid', '')
@@ -50,7 +49,10 @@ async function connectToWhatsApp() {
                 lidToNumber[lid] = number
             }
         }
-    })
+    }
+
+    sock.ev.on('contacts.upsert', mapContacts)
+    sock.ev.on('contacts.update', mapContacts)
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
@@ -92,6 +94,16 @@ async function connectToWhatsApp() {
 
             const from = resolveNumber(remoteJid)
             const pushName = msg.pushName || null
+
+            if (remoteJid.endsWith('@lid')) {
+                console.log('LID debug:', JSON.stringify({
+                    remoteJid,
+                    from,
+                    pushName,
+                    participant: msg.key.participant,
+                    lidMap: lidToNumber,
+                }))
+            }
 
             const text =
                 msg.message?.conversation ||
