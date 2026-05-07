@@ -53,6 +53,9 @@ async function connectToWhatsApp() {
 
     sock.ev.on('contacts.upsert', mapContacts)
     sock.ev.on('contacts.update', mapContacts)
+    sock.ev.on('messaging-history.set', ({ contacts }) => {
+        if (contacts?.length) mapContacts(contacts)
+    })
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update
