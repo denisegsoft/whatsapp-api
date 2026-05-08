@@ -13,6 +13,27 @@ let sock = null
 let isConnected = false
 let currentQR = null
 
+// Buffer de mensajes por usuario: from -> { jid, pushName, messageId, timestamp, messages[], timer }
+const messageBuffer = new Map()
+const BUFFER_DELAY_MS = 5000  // esperar 5s de silencio antes de enviar a Laravel
+
+function flushBuffer(from) {
+    const buf = messageBuffer.get(from)
+    if (!buf || buf.messages.length === 0) return
+    messageBuffer.delete(from)
+
+    const textoCompleto = buf.messages.join('\n')
+
+    sendWebhookToLaravel({
+        from,
+        jid:       buf.jid,
+        pushName:  buf.pushName,
+        message:   textoCompleto,
+        messageId: buf.messageId,
+        timestamp: buf.timestamp,
+    })
+}
+
 // Mapa lid -> número real, se va completando con cada mensaje
 const lidToNumber = {}
 
@@ -117,14 +138,22 @@ async function connectToWhatsApp() {
 
             console.log(`Mensaje de ${pushName || from} (${from}): ${text}`)
 
-            await sendWebhookToLaravel({
-                from,
-                jid: remoteJid,
-                pushName,
-                message: text,
-                messageId: msg.key.id,
-                timestamp: msg.messageTimestamp,
-            })
+            // Acumular en buffer y resetear el timer
+            if (messageBuffer.has(from)) {
+                clearTimeout(messageBuffer.get(from).timer)
+                messageBuffer.get(from).messages.push(text)
+            } else {
+                messageBuffer.set(from, {
+                    jid:       remoteJid,
+                    pushName,
+                    messageId: msg.key.id,
+                    timestamp: msg.messageTimestamp,
+                    messages:  [text],
+                })
+            }
+
+            const timer = setTimeout(() => flushBuffer(from), BUFFER_DELAY_MS)
+            messageBuffer.get(from).timer = timer
         }
     })
 }

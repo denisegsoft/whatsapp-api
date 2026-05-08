@@ -19,7 +19,7 @@ async function sendWebhookToLaravel(data) {
                 'Content-Type': 'application/json',
                 'Accept': 'application/json',
             },
-            timeout: 8000,
+            timeout: 35000,  // Claude puede tardar hasta ~15-20s, más margen
         })
         laravelResponse = res.data
         console.log(`Webhook enviado a Laravel: ${data.from}`)
