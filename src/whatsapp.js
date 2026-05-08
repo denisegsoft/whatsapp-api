@@ -119,6 +119,7 @@ async function connectToWhatsApp() {
 
             await sendWebhookToLaravel({
                 from,
+                jid: remoteJid,
                 pushName,
                 message: text,
                 messageId: msg.key.id,
@@ -133,8 +134,8 @@ async function sendMessage(to, message) {
         throw new Error('WhatsApp no está conectado')
     }
 
-    const number = to.replace(/[^0-9]/g, '')
-    const jid = `${number}@s.whatsapp.net`
+    // Si ya viene con @, es un JID completo — usarlo directo
+    const jid = to.includes('@') ? to : `${to.replace(/[^0-9]/g, '')}@s.whatsapp.net`
 
     await sock.sendMessage(jid, { text: message })
 }
